@@ -4,6 +4,8 @@ import sys
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("ZS_BASE", "http://127.0.0.1:8000")
+BUILD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".build")
+os.makedirs(BUILD_DIR, exist_ok=True)
 fails, errs, total = [], [], 0
 def check(n, c, e=None):
     global total
@@ -80,16 +82,23 @@ with sync_playwright() as pw:
         // 画布内 UI 布局量（脚本作用域内的全局绑定）
         menuBottom: btnY(menuButtons.length-1) + BTN_H, canvasH: H,
         profPanelBottom: btnY(menuButtons.length) + 12 + 78,
-        lastHintY: 682, achRows: Math.ceil(14/2), achBottom: 130 + Math.ceil(14/2-1)*60 + 52 };
+        lastHintY: 698, firstHintY: 598, achRows: Math.ceil(14/2), achBottom: 130 + Math.ceil(14/2-1)*60 + 52,
+        hudPanelBottom: 74 + 146, buffRowRight: 20 + 14 + 8 * 26 + 24,
+        upCardL: upgradeCardRect(0).x, upCardR: upgradeCardRect(2).x + upgradeCardRect(2).w,
+        upCardB: upgradeCardRect(0).y + upgradeCardRect(0).h };
     }""")
     check("画布完整可见", g["fits"], g["rect"])
     check("画布宽高比 16:9", abs(g["ratio"] - 16/9) < 0.01, round(g["ratio"], 3))
     check("画布已实际渲染内容", g["colors"] > 40, f"{g['colors']} 种采样色, 平均亮度 {g['meanLum']}")
     check("菜单按钮区在画布内", g["menuBottom"] < g["canvasH"], f"{g['menuBottom']} < {g['canvasH']}")
     check("档案条不遮挡按钮", g["profPanelBottom"] > g["menuBottom"], f"{g['profPanelBottom']} > {g['menuBottom']}")
-    check("档案条不与底部提示重叠", g["profPanelBottom"] < 604, f"{g['profPanelBottom']} < 604")
+    check("档案条不与底部提示重叠", g["profPanelBottom"] < g["firstHintY"], f"{g['profPanelBottom']} < {g['firstHintY']}")
     check("底部提示在画布内", g["lastHintY"] < g["canvasH"], g["lastHintY"])
     check("成就墙两列网格在画布内", g["achBottom"] < 690, g["achBottom"])
+    check("战斗 HUD 面板在画布内", g["hudPanelBottom"] < g["canvasH"], g["hudPanelBottom"])
+    check("HUD 强化芯片行不溢出面板", g["buffRowRight"] <= 20 + 264 - 14, f"{g['buffRowRight']}")
+    check("强化卡片在画布内",
+          g["upCardL"] > 0 and g["upCardR"] < g["rect"][2] and g["upCardB"] < g["canvasH"], g["upCardB"])
 
     print("=== 各界面像素确非空白 ===")
     for name, keys in [("菜单", []), ("游戏内", [])]:
@@ -110,6 +119,74 @@ with sync_playwright() as pw:
     pg.keyboard.down("KeyD"); pg.keyboard.down("KeyJ"); pg.wait_for_timeout(4000)
     pg.keyboard.up("KeyD"); pg.keyboard.up("KeyJ"); pg.wait_for_timeout(200)
     nonblank("战斗画面")
+
+    print("=== 新功能：激光枪 / 冲刺 / 连击 / 波次强化 ===")
+    shot_dir = BUILD_DIR
+    # 先保证 1P 处于可操控的战斗状态
+    pg.evaluate("""() => {
+      state = 1; players[0].dead = false; players[0].perma = false;
+      players[0].hp = players[0].maxHp; players[0].lives = 3;
+      players[0].dashCd = 0; players[0].invuln = 0; players[0]._dashHeld = false;
+      return true;
+    }""")
+    pg.wait_for_timeout(200)
+
+    # 激光枪实机验证（原 bug：开火抛 TypeError → rAF 断链 → 整局冻结）
+    pg.evaluate("""() => { const p = players[0];
+      p.guns = ['pistol', 'laser']; p.gunIdx = 1; p.wlv.laser = { lv: 15, xp: 0 }; p.shootCd = 0; }""")
+    pg.keyboard.down("KeyJ"); pg.wait_for_timeout(900); pg.keyboard.up("KeyJ"); pg.wait_for_timeout(150)
+    lz = pg.evaluate("""() => ({ playing: state === 1, beams: beams.length,
+      wlv: players[0].wlv.laser.lv, fired: runTime })""")
+    check("激光枪实机连射后仍在游戏", lz["playing"] is True, lz)
+    check("激光枪实机打出光束", lz["beams"] > 0, f"{lz['beams']} 条")
+    pg.locator("#game").screenshot(path=os.path.join(shot_dir, "shot-laser.png"))
+    t0 = pg.evaluate("() => runTime"); pg.wait_for_timeout(400)
+    t1 = pg.evaluate("() => runTime")
+    check("激光开火后帧循环未冻结", t1 > t0, f"{t0:.2f} -> {t1:.2f}")
+
+    # 冲刺：按住 Shift 后应立刻进入冲刺态
+    pg.evaluate("""() => { const p = players[0];
+      p.dead = false; p.perma = false; p.hp = p.maxHp; p.dashCd = 0; p.dashT = 0; p._dashHeld = false; }""")
+    pg.keyboard.down("ShiftLeft"); pg.wait_for_timeout(60)
+    d = pg.evaluate("""() => ({ dashT: players[0].dashT, dashCd: players[0].dashCd, invuln: players[0].invuln })""")
+    check("Shift 触发冲刺", d["dashT"] > 0 or d["dashCd"] > 0, d)
+    check("冲刺附带无敌帧", d["invuln"] > 0, d["invuln"])
+    pg.keyboard.up("ShiftLeft"); pg.wait_for_timeout(300)
+
+    # 连击：结算 6 只僵尸，验证分数按倍率走
+    c = pg.evaluate("""() => {
+      const p = players[0];
+      score = 0; kills = 0; combo = 0; comboT = 0; comboBest = 0;
+      for (let i = 0; i < 6; i++) {
+        const e = makeZombie('walker', p.x + 120, -1); e.x = p.x + 120; enemies.push(e);
+        killEnemy(e, p, 'pistol');
+      }
+      return { combo, mul: comboMul(combo), score, best: comboBest };
+    }""")
+    check("6 连击进入 ×1.5 档", c["combo"] == 6 and c["mul"] == 1.5, c)
+    check("连击分数按倍率结算", c["score"] == 52, c["score"])
+    pg.wait_for_timeout(120)
+    pg.locator("#game").screenshot(path=os.path.join(shot_dir, "shot-battle-hud.png"))
+
+    # 波次强化：清空一波 → 弹出三选一 → 选卡后进入下一波
+    pg.evaluate("""() => { enemies.length = 0; wave = 1; spawnedThisWave = 5; waveBudget = 5;
+      return { before: wave }; }""")
+    pg.wait_for_timeout(250)
+    u2 = pg.evaluate("""() => ({ offer: upgradeOffer, wave, buffs: players.map(p => ({ ...p.buffs })) })""")
+    check("清空波次后弹出三选一", isinstance(u2["offer"], list) and len(u2["offer"]) == 3, u2["offer"])
+    pg.wait_for_timeout(150)
+    pg.locator("#game").screenshot(path=os.path.join(shot_dir, "shot-upgrade.png"))
+    frozen = pg.evaluate("""() => ({ x: players[0].x, t: runTime })""")
+    pg.wait_for_timeout(400)
+    frozen2 = pg.evaluate("""() => ({ x: players[0].x, t: runTime })""")
+    check("强化选择时世界静止", frozen["x"] == frozen2["x"], f"{frozen['x']} -> {frozen2['x']}")
+    before_wave = u2["wave"]
+    pg.keyboard.press("Digit1"); pg.wait_for_timeout(300)
+    u3 = pg.evaluate("""() => ({ offer: upgradeOffer, wave, lv: players[0].buffs, st: state })""")
+    check("按 1 选择后关闭界面并继续", u3["offer"] is None and u3["wave"] == before_wave + 1, u3["wave"])
+    check("强化已计入玩家状态", sum(u3["lv"].values()) >= 1, u3["lv"])
+    check("选择后回到正常战斗", u3["st"] == 1, u3["st"])
+    pg.locator("#game").screenshot(path=os.path.join(shot_dir, "shot-after-upgrade.png"))
 
     print("=== 离线降级（未起后端 / file:// 直接打开） ===")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

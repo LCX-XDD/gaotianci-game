@@ -32,10 +32,11 @@ WEAPON_IDS = ["pistol", "smg", "shotgun", "rifle", "launcher", "laser"]
 ZOMBIE_IDS = ["walker", "runner", "jumper", "spitter", "fat", "boomer", "shield", "brute", "boss"]
 
 # 服务端信任边界：客户端上报的一切都不可信，先钳到物理上可能的范围。
-# 分数在游戏里只来自击杀(每只僵尸的经验值)，僵尸王最高 250，取 1.1 倍余量。
+# 分数在游戏里只来自击杀(每只僵尸的经验值 × 连击倍率)，僵尸王经验最高 250，
+# 连击倍率最高 ×4，所以单杀分数上限是 1000，取 1.1 倍余量。
 MAX_SCORE = 1_000_000
 MAX_KILLS = 200_000
-MAX_XP_PER_KILL = 275
+MAX_XP_PER_KILL = 1100
 SCORE_SLACK = 1_000
 
 # ---------------------------------------------------------------- 成就定义

@@ -66,13 +66,13 @@ def which_node():
     return shutil.which("node")
 
 
-def build_node_bundle():
+def build_node_bundle(driver="driver.js"):
     """把 game 脚本 + 打桩前导 + 测试驱动拼成一个可执行文件。"""
     html = open(os.path.join(ROOT, "static", "index.html"), encoding="utf-8").read()
     game = re.search(r"<script>(.*)</script>", html, re.S).group(1)
     pre = open(os.path.join(TESTS, "prelude.js"), encoding="utf-8").read()
-    drv = open(os.path.join(TESTS, "driver.js"), encoding="utf-8").read()
-    out = os.path.join(BUILD, "game_test.js")
+    drv = open(os.path.join(TESTS, driver), encoding="utf-8").read()
+    out = os.path.join(BUILD, os.path.splitext(driver)[0] + ".bundle.js")
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(pre + '\n;(function(){ "use strict";\n' + game + "\n" + drv + "\n})();\n")
     return out
@@ -92,12 +92,15 @@ def main():
     if not which_node():
         log("  跳过：未找到 node")
         results.append(("游戏逻辑", None))
+        results.append(("新功能", None))
     else:
-        r = run([which_node(), build_node_bundle()], capture_output=True)
-        print(r.stdout, end="")
-        if r.stderr.strip():
-            print(r.stderr, file=sys.stderr)
-        results.append(("游戏逻辑", r.returncode == 0))
+        for drv, label in (("driver.js", "游戏逻辑"), ("features_test.js", "新功能/回归")):
+            log(f"--- {label} ({drv}) ---")
+            r = run([which_node(), build_node_bundle(drv)], capture_output=True)
+            print(r.stdout, end="")
+            if r.stderr.strip():
+                print(r.stderr, file=sys.stderr)
+            results.append((label, r.returncode == 0))
 
     log("########## 2/4  统计面板渲染 ##########")
     if not which_node():

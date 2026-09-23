@@ -92,6 +92,11 @@ s, d = post("/api/run", {"name": None})
 check("空代号回落默认名", d["profile"]["name"] == "无名幸存者", d["profile"]["name"])
 s, d = post("/api/run", {"name": "境界测试", "score": 900000, "kills": 4200, "boss_kills": 15})
 check("长局马拉松仍被接受", d["ok"])
+# 连击倍率(最高 ×4)会让单杀分数达到 1000，边界必须放得下这种真实对局
+s, d = post("/api/run", {"name": "连击王", "score": 100000, "kills": 100})
+check("满连击倍率的对局被接受", d["ok"], d.get("error"))
+s, d = post("/api/run", {"name": "连击王", "score": 111101, "kills": 100})
+check("超出单杀上限仍被拒", not d["ok"], d.get("error"))
 check("POST /api/heartbeat", post("/api/heartbeat", {"name": "李四", "score": 1})[1]["ok"])
 
 print("=== 协议 ===")
